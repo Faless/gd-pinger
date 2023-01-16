@@ -7,7 +7,7 @@ class PingInfo:
 	# The number of samples to track
 	const SIZE = 21
 
-	var samples = PoolIntArray()
+	var samples = PackedInt32Array()
 	var pos = 0
 
 	func _init():
@@ -27,63 +27,53 @@ class PingInfo:
 		if pos >= SIZE:
 			pos = 0
 
-# Called reguarly on server (and on clients as a result of RPC).
+# Called reguarly checked server (and checked clients as a result of RPC).
 # Connect to this to get ping updates in the form:
 # {
 #    PEER_ID: PING
 # }
-signal sync_state(state)
+signal state_synced(state)
 
-export var active = false
-export var ping_interval = 100
-export var sync_interval = 1000
-export var ping_history = 10 setget set_ping_history # (ping_interval * ping_history) / 2 = maximum ping
+@export var active = false
+@export var ping_interval = 100
+@export var sync_interval = 1000
 
-var _clients = {}
-var _state = {}
-var _last_ping = 0
-var _pings = []
-var _last_sync = 0
-
-func set_ping_history(val):
-	if val < 1:
-		return
-	_last_ping = 0
-	_pings.resize(val)
-	for i in range(0, val):
-		_pings[i] = 0
-	ping_history = val
+# (ping_interval * ping_history) / 2 = maximum ping
+@export var ping_history = 10 :
+	set(value):
+		if value < 1:
+			return
+		ping_history = value
+		clear_pings()
 
 
-func _init():
-	set_ping_history(ping_history)
+var _clients := {}
+var _state := {}
+var _last_ping := 0
+var _pings := []
+var _last_sync := 0
+
+func _init() -> void:
+	clear_pings()
 
 
-func _ready():
-	multiplayer.connect("network_peer_connected", self, "_add_peer")
-	multiplayer.connect("network_peer_disconnected", self, "_del_peer")
+func _ready() -> void:
+	multiplayer.peer_connected.connect(_add_peer)
+	multiplayer.peer_disconnected.connect(_del_peer)
 
 
-func _exit_tree():
-	multiplayer.disconnect("network_peer_connected", self, "_add_peer")
-	multiplayer.disconnect("network_peer_disconnected", self, "_del_peer")
+func _exit_tree() -> void:
+	multiplayer.peer_connected.disconnect(_add_peer)
+	multiplayer.peer_disconnected.disconnect(_del_peer)
 
 
-func _add_peer(id):
-	_clients[id] = PingInfo.new()
-
-
-func _del_peer(id):
-	_clients.erase(id)
-
-
-func _process(delta):
-	if not active or not multiplayer.has_network_peer() or \
-		multiplayer.network_peer.get_connection_status() != NetworkedMultiplayerPeer.CONNECTION_CONNECTED \
-		or not multiplayer.is_network_server():
+func _process(delta: float) -> void:
+	if not active or not multiplayer.has_multiplayer_peer() or \
+		multiplayer.multiplayer_peer.get_connection_status() != MultiplayerPeer.CONNECTION_CONNECTED \
+		or not multiplayer.is_server():
 		return
 
-	var now = OS.get_ticks_msec()
+	var now = Time.get_ticks_msec()
 	if sync_interval > 0 and now >= _last_sync + sync_interval:
 		sync_state()
 		_last_sync = now
@@ -92,20 +82,38 @@ func _process(delta):
 		if _last_ping == ping_history:
 			_last_ping = 0
 		_pings[_last_ping] = now
-		rpc("_ping", now)
+		_ping.rpc(now)
 
 
-puppet func _ping(time):
-	if typeof(time) != TYPE_INT: return
-	rpc_id(1, "_pong", time)
+func clear_pings() -> void:
+	_last_ping = 0
+	_pings.resize(ping_history)
+	for i in range(0, ping_history):
+		_pings[i] = 0
 
-master func _pong(time):
-	if typeof(time) != TYPE_INT: return
-	var id = multiplayer.get_rpc_sender_id()
+
+func _add_peer(id: int) -> void:
+	_clients[id] = PingInfo.new()
+
+
+func _del_peer(id: int) -> void:
+	_clients.erase(id)
+
+
+@rpc
+func _ping(time: int) -> void:
+	_pong.rpc_id(1, time)
+
+
+@rpc("any_peer")
+func _pong(time: int) -> void:
+	if not multiplayer.is_server():
+		return
+	var id = multiplayer.get_remote_sender_id()
 	if not _clients.has(id):
 		return
 
-	var now = OS.get_ticks_msec()
+	var now = Time.get_ticks_msec()
 	var last = _last_ping
 	var found = ping_history * ping_interval
 
@@ -119,26 +127,29 @@ master func _pong(time):
 
 	_clients[id].set_next((now - found) / 2)
 
-func sync_state():
-	if not active or not multiplayer.has_network_peer() or not multiplayer.is_network_server():
+
+func sync_state() -> void:
+	if not active or not multiplayer.has_multiplayer_peer() or not multiplayer.is_server():
 		return
 
 	_state = {}
 	for k in _clients:
 		_state[k] = _clients[k].get_average()
-	rpc("_sync_state", _state)
-	emit_signal("sync_state", _state)
+	_sync_state.rpc(_state)
+	state_synced.emit(_state)
 
-puppet func _sync_state(state):
-	if typeof(state) != TYPE_DICTIONARY: return
+
+@rpc
+func _sync_state(state: Dictionary) -> void:
 	_state = {}
 	for k in state:
 		if typeof(k) != TYPE_INT or typeof(state[k]) != TYPE_INT:
 			continue
 		_state[k] = state[k]
-	emit_signal("sync_state", _state)
+	state_synced.emit(_state)
 
-func get_peer_latency(id):
+
+func get_peer_latency(id: int) -> int:
 	if not _state.has(id):
 		return -1
 	return _state[id]

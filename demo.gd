@@ -1,20 +1,20 @@
 extends Control
 
 
-var peer = NetworkedMultiplayerENet.new()
+var peer = ENetMultiplayerPeer.new()
 
 func _ready():
-	$Pinger.connect("sync_state", self, "sync_state")
+	$Pinger.state_synced.connect(sync_state)
 
 
 func start_server():
 	peer.create_server(9081)
-	multiplayer.set_network_peer(peer)
+	multiplayer.set_multiplayer_peer(peer)
 
 
 func start_client():
 	peer.create_client("127.0.0.1", 9081)
-	multiplayer.set_network_peer(peer)
+	multiplayer.set_multiplayer_peer(peer)
 
 
 func sync_state(state):
